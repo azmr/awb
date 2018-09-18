@@ -8,11 +8,12 @@
  *  	[ ] + Standard Deviation Weighting
  *  	[ ] + Standard Deviation & Luminance Weighting
  *  	[ ] Robust (Huo et al., 2005)
- *  [ ] Simplest Color Balance (Limare et al., 2011)
+ *  [X] Simplest Color Balance (Limare et al., 2011) - colour and contrast
  *  [ ] Retinex/Perfect Reflector
  *  	[ ] Multiscale (IPOL - Petro et al., 2014)
  *  	[ ] Poisson/PDE (IPOL - Limare et al., 2011)
  *  [ ] Sensor Correlation (?)
+ *  [ ] Chiou's White Balance (white point detection, white balance judge, white balance adjustment)
  *  [ ] ...
  *
  *  Chromatic Adaptation Transforms
@@ -43,11 +44,19 @@
  *  Terminology
  *  - Component/Channel?
  */
+#ifndef AWB_API
+#define AWB_API static
+#endif/*AWB_API*/
+
 #ifdef AWB_SELFTEST
 #include <stdio.h>
 
 #ifndef awbAssert
-#define awbAssert(expr) ((expr) || (fprintf(stderr, "\nAssertion Failed in %s (%s:%d):\n\t%s", __FUNCTION__, __FILE__, __LINE__, #expr), __debugbreak(), 1))
+#ifdef _MSC_VER
+#define awbAssert(expr) ((expr) || (fprintf(stderr, "\nAssertion Failed in %s (%s:%d):\n\t%s", __FUNCTION__, __FILE__, __LINE__, #expr), __debugbreak, 1))
+#else
+#define awbAssert(expr) ((expr) || (fprintf(stderr, "\nAssertion Failed in %s (%s:%d):\n\t%s", __FUNCTION__, __FILE__, __LINE__, #expr), *(void*)0, 1))
+#endif
 #endif/*awbAssert*/
 void DebugHisto(char *Name, int N, int *Histo, int Step, int Denom)
 {
@@ -75,8 +84,81 @@ typedef struct awb_image
 	char ComponentLayout[4]; /* e.g. "ARGB" */
 } awb_image;
 
+typedef enum awb_result {
+	AWB_Ok = 0,
+	AWB_Error = -1,
+	AWB_UnmatchedDimensions = -2,
+} awb_result;
+
 #if defined(AWB_IMPLEMENTATION) || defined(AWB_SELFTEST)
 /* Input and output images may be the same */
+
+AWB_API awb_result
+awbGrayWorld(awb_image *Src, awb_image *Dst)
+{
+	awb_result Result = 0;
+	int W = Src->W, H = Src->H, N = W*H;
+
+	/* TODO: error checking */
+	if(Dst->W != W || Dst->H != H)
+	{ Result = AWB_UnmatchedDimensions; }
+
+	if(Result == AWB_Ok)
+	{
+		int x, y, i;
+		int SrcStride = Src->Stride, DstStride = Dst->Stride;
+		int cSrcChannels = Src->NumComponents, cDstChannels = Dst->NumComponents;
+		/* TODO: determine these from component layout */
+		int SrcR = 0, SrcG = 1, SrcB = 2;
+		int DstR = 0, DstG = 1, DstB = 2;
+
+		double RSum = 0, GSum = 0, BSum = 0, RAvg, GAvg, BAvg, dN = (double)N;
+		{ /* Find avg value of each */
+			unsigned char *SrcRow = Src->Data;
+			for(y = 0; y < H; ++y) {
+				for(x = 0; x < W; ++x) {
+					unsigned char *Px = SrcRow + (x*cSrcChannels);
+					RSum += (double)Px[SrcR];
+					GSum += (double)Px[SrcG];
+					BSum += (double)Px[SrcB];
+				}
+				SrcRow += SrcStride;
+			}
+
+			RAvg = RSum/dN, GAvg = GSum/dN, BAvg = BSum/dN;
+		}
+
+		{ /* Do corrections */
+			double RCorr = GAvg/RAvg, BCorr = GAvg/BAvg;
+			unsigned char *SrcRow = Src->Data, *DstRow = Dst->Data;
+
+#ifdef AWB_SELFTEST
+			printf( "RSum = %lf,   GSum = %lf,   BSum = %lf\n"
+					"RAvg = %lf,   GAvg = %lf,   BAvg = %lf\n"
+					"RCorr = %lf,  BCorr = %lf\n",
+					RSum, GSum, BSum,
+					RAvg, GAvg, BAvg,
+					RCorr, BCorr);
+#endif/*AWB_SELFTEST*/
+
+			for(y = 0; y < H; ++y) {
+				for(x = 0; x < W; ++x) {
+					unsigned char *SrcPx = SrcRow + (x*cSrcChannels);
+					unsigned char *DstPx = DstRow + (x*cDstChannels);
+					double R = RCorr * (double)SrcPx[SrcR] + 0.5;
+					double B = BCorr * (double)SrcPx[SrcB] + 0.5;
+					DstPx[DstR] = R < 255.0 ? (unsigned char)R : 255;
+					DstPx[DstG] = SrcPx[SrcG];
+					DstPx[DstB] = B < 255.0 ? (unsigned char)B : 255;
+				}
+				SrcRow += SrcStride;
+				DstRow += DstStride;
+			}
+		}
+	}
+
+	return Result;
+}
 
 /* Apply channel-wise affine transformation to stretch highest value pixels to white
  * and lowest to black */
@@ -84,8 +166,11 @@ typedef struct awb_image
 /* W,  and H should be the same between Src & Dst */
 /* TODO (api): check that some pixels come under the sat values */
 /* TODO (api): allow user-provided histo? */
-void awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, float HighSaturate)
+/* TODO: error checking */
+AWB_API awb_result
+awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, float HighSaturate)
 {
+	awb_result Result = 0;
 	int x, y, i;
 	int W = Src->W, H = Src->H;
 	int SrcStride = Src->Stride, DstStride = Dst->Stride;
@@ -116,7 +201,7 @@ void awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, 
 	unsigned char MinG = 0, MaxG = 254;
 	unsigned char MinB = 0, MaxB = 254;
 
-	unsigned char *SrcRow = Src->Data, *DstRow = Dst->Data;
+	unsigned char *SrcRow = Src->Data, *DstRow = 0;
 	for(y = 0; y < H; ++y)
 	{ /* Make histogram of values for each channel */
 		for(x = 0; x < W; ++x)
@@ -127,7 +212,6 @@ void awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, 
 			++HistoB[Px[SrcB]];
 		}
 		SrcRow += SrcStride;
-		DstRow += DstStride;
 	}
 
 	/* TODO (feat): make histogram available for user? */
@@ -195,6 +279,7 @@ void awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, 
 		}
 	}
 
+	return Result;
 }
 #endif/*AWB_IMPLEMENTATION*/
 
@@ -205,11 +290,13 @@ void awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, 
 #include "../stb/stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "../stb/stb_image_write.h"
+#include <stdlib.h>
 
 int main() {
-	char *ImgName    = "test_images/GYM_9837.JPG";
-	awb_image Img    = {0};
 	int Result       = 0;
+	char *ImgName    = "test_images/IMG_5041.JPG";
+	unsigned char *OutData = 0;
+	awb_image Img = {0};
 
 	Img.Data = stbi_load(ImgName, &Img.W, &Img.H, &Img.NumComponents, 0);
 	if(! Img.Data) {
@@ -224,18 +311,28 @@ int main() {
 		   "   Stride: %d\n"
 		   "   Channels: %d\n"
 		   , Img.W, Img.H, Img.Stride, Img.NumComponents);
+	
+	OutData = malloc(Img.Stride * Img.H);
+	memset(OutData, 127, Img.Stride * Img.H); /* check that the data is being used) */ \
 
 	/* puts("Writing first image"); */
 	/* stbi_write_png("test_images/testOrig.png", Img.W, Img.H, Img.NumComponents, Img.Data, Img.Stride); */
 
-	puts("Performing color balance");
-	awbSimplestColorBalance(&Img, &Img, 0.01f, 0.02f);
+#define TestMethod(method, ...) do { \
+		awb_image Out = Img; \
+		puts("\n\nPerforming " #method); \
+		Out.Data = OutData; \
+		awbAssert(! awb## method(&Img, __VA_ARGS__)); \
+		puts("Writing image"); \
+		stbi_write_png("test_images/"#method".png", Out.W, Out.H, Out.NumComponents, Out.Data, Out.Stride); \
+	} while(0)
 
-	puts("Writing second image");
-	stbi_write_png("test_images/testProc.png", Img.W, Img.H, Img.NumComponents, Img.Data, Img.Stride);
+	/* TestMethod(SimplestColorBalance, &Out, 0.01f, 0.02f); */
+	TestMethod(GrayWorld, &Out);
 
-	/* NOTE: just for the new histogram */
-	awbSimplestColorBalance(&Img, &Img, 0.01f, 0.02f);
+
+	/* /1* NOTE: just for the new histogram *1/ */
+	/* awbSimplestColorBalance(&Img, &Img, 0.01f, 0.02f); */
 
 	end:
 	return Result;
