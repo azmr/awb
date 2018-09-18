@@ -3,13 +3,13 @@
 /* Feature List / TODO:
  *  Illuminant Estimation Methods
  *  [ ] Gray World Theory
- *  	[ ] Vanilla
+ *  	[X] Vanilla
  *  	[ ] + Retinex
  *  	[ ] + Standard Deviation Weighting
  *  	[ ] + Standard Deviation & Luminance Weighting
  *  	[ ] Robust (Huo et al., 2005)
  *  [X] Simplest Color Balance (Limare et al., 2011) - colour and contrast
- *  [ ] Retinex/Perfect Reflector
+ *  [/] Retinex/Perfect Reflector
  *  	[ ] Multiscale (IPOL - Petro et al., 2014)
  *  	[ ] Poisson/PDE (IPOL - Limare et al., 2011)
  *  [ ] Sensor Correlation (?)
@@ -225,6 +225,112 @@ awbPerfectReflector(awb_image *Src, awb_image *Dst)
 	return Result;
 }
 
+AWB_API awb_result
+awbGrayWorldRetinex(awb_image *Src, awb_image *Dst)
+{
+	awb_result Result = 0;
+	int W = Src->W, H = Src->H, N = W*H;
+
+	/* TODO: error checking */
+	if(Dst->W != W || Dst->H != H)
+	{ Result = AWB_UnmatchedDimensions; }
+
+	if(Result == AWB_Ok)
+	{
+		int x, y, i;
+		int SrcStride = Src->Stride, DstStride = Dst->Stride;
+		int cSrcChannels = Src->NumComponents, cDstChannels = Dst->NumComponents;
+		/* TODO: determine these from component layout */
+		int SrcR = 0, SrcG = 1, SrcB = 2;
+		int DstR = 0, DstG = 1, DstB = 2;
+		double RSum = 0.0, GSum = 0.0, BSum = 0.0;
+		double RSqSum = 0.0, BSqSum = 0.0;
+		double ToNorm = 1.0/255.0;
+
+		unsigned char uRMax = 0, uGMax = 0, uBMax = 0;
+		{ /* Find max value of each */
+			unsigned char *SrcRow = Src->Data;
+			for(y = 0; y < H; ++y) {
+				for(x = 0; x < W; ++x) {
+					unsigned char *Px = SrcRow + (x*cSrcChannels);
+					double R = ToNorm * (double)Px[SrcR],
+					       G = ToNorm * (double)Px[SrcG],
+					       B = ToNorm * (double)Px[SrcB];
+
+					RSum += R;
+					GSum += G;
+					BSum += B;
+
+					RSqSum += R*R;
+					BSqSum += B*B;
+
+					if(uRMax < Px[SrcR]) { uRMax = Px[SrcR]; }
+					if(uGMax < Px[SrcG]) { uGMax = Px[SrcG]; }
+					if(uBMax < Px[SrcB]) { uBMax = Px[SrcB]; }
+				}
+				SrcRow += SrcStride;
+			}
+		}
+
+		/*
+		 * | u |   | SumR^2   SumR |-1  | SumG |
+		 * |   | = |               |  . |      |
+		 * | v |   | MaxR^2   MaxR |    | MaxG |
+		 *
+		 * R' = u*R*R + v*R
+		 */
+		{ /* Do corrections */
+			double RMax = ToNorm * (double)uRMax,                  /* d */
+			       GMax = ToNorm * (double)uGMax,
+			       BMax = ToNorm * (double)uBMax;
+			double RSqMax = RMax*RMax, BSqMax = BMax*BMax;         /* c */
+			double RDenom = 1.0 / (RSqSum * RMax - RSqMax * RSum), /* 1/(ad-bc) */
+			       BDenom = 1.0 / (BSqSum * BMax - BSqMax * BSum);
+			double Ru = (   RMax*GSum -   RSum*GMax) * RDenom,
+			       Rv = (-RSqMax*GSum + RSqSum*GMax) * RDenom,
+			       Bu = (   BMax*GSum -   BSum*GMax) * BDenom,
+			       Bv = (-BSqMax*GSum + BSqSum*GMax) * BDenom;
+
+			unsigned char *SrcRow = Src->Data, *DstRow = Dst->Data;
+#ifdef AWB_SELFTEST
+			printf( "RMax = %lf,   GMax = %lf,   BMax = %lf\n"
+					"RSum = %lf,   GSum = %lf,   BSum = %lf\n"
+					"RSqMax = %lf, BSqMax = %lf\n"
+					"RSqSum = %lf, BSqSum = %lf\n\n"
+					"RDenom: %.16lf, BDenom: %.16lf\n"
+					"Ru = %lf,  Rv = %lf\n"
+					"Bu = %lf,  Bv = %lf\n",
+					RMax, GMax, BMax,
+					RSum, GSum, BSum,
+					RSqMax, BSqMax,
+					RSqSum, BSqSum,
+					RDenom, BDenom,
+					Ru, Rv, Bu, Bv);
+#endif/*AWB_SELFTEST*/
+
+			for(y = 0; y < H; ++y) {
+				for(x = 0; x < W; ++x) {
+					unsigned char *SrcPx = SrcRow + (x*cSrcChannels);
+					unsigned char *DstPx = DstRow + (x*cDstChannels);
+					double R = ((double)SrcPx[SrcR] / 255.0);
+					double B = ((double)SrcPx[SrcB] / 255.0);
+					R = Ru * R*R + Rv * R;
+					B = Bu * B*B + Bv * B;
+					DstPx[DstR] = R < 1.0 ? (unsigned char)(255.0*R + 0.5) : 255;
+					DstPx[DstG] = SrcPx[SrcG];
+					DstPx[DstB] = B < 1.0 ? (unsigned char)(255.0*B + 0.5) : 255;
+				}
+				SrcRow += SrcStride;
+				DstRow += DstStride;
+			}
+		}
+	}
+
+	return Result;
+}
+
+
+
 /* Apply channel-wise affine transformation to stretch highest value pixels to white
  * and lowest to black */
 /* Clips a small percentage at top and bottom to account for noise */
@@ -392,9 +498,10 @@ int main() {
 		stbi_write_png("test_images/"#method".png", Out.W, Out.H, Out.NumComponents, Out.Data, Out.Stride); \
 	} while(0)
 
-	TestMethod(SimplestColorBalance, &Out, 0.01f, 0.02f);
-	TestMethod(GrayWorld, &Out);
-	TestMethod(PerfectReflector, &Out);
+	/* TestMethod(SimplestColorBalance, &Out, 0.01f, 0.02f); */
+	/* TestMethod(GrayWorld, &Out); */
+	/* TestMethod(PerfectReflector, &Out); */
+	TestMethod(GrayWorldRetinex, &Out);
 
 
 	/* /1* NOTE: just for the new histogram *1/ */
