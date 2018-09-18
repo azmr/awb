@@ -160,6 +160,71 @@ awbGrayWorld(awb_image *Src, awb_image *Dst)
 	return Result;
 }
 
+/* NOTE: does nothing if there are white pixels */
+/* TODO: use histo & add saturation */
+AWB_API awb_result
+awbPerfectReflector(awb_image *Src, awb_image *Dst)
+{
+	awb_result Result = 0;
+	int W = Src->W, H = Src->H, N = W*H;
+
+	/* TODO: error checking */
+	if(Dst->W != W || Dst->H != H)
+	{ Result = AWB_UnmatchedDimensions; }
+
+	if(Result == AWB_Ok)
+	{
+		int x, y, i;
+		int SrcStride = Src->Stride, DstStride = Dst->Stride;
+		int cSrcChannels = Src->NumComponents, cDstChannels = Dst->NumComponents;
+		/* TODO: determine these from component layout */
+		int SrcR = 0, SrcG = 1, SrcB = 2;
+		int DstR = 0, DstG = 1, DstB = 2;
+
+		unsigned char RMax = 0, GMax = 0, BMax = 0;
+		{ /* Find max value of each */
+			unsigned char *SrcRow = Src->Data;
+			for(y = 0; y < H; ++y) {
+				for(x = 0; x < W; ++x) {
+					unsigned char *Px = SrcRow + (x*cSrcChannels);
+					if(RMax < Px[SrcR]) { RMax = Px[SrcR]; }
+					if(GMax < Px[SrcG]) { GMax = Px[SrcG]; }
+					if(BMax < Px[SrcB]) { BMax = Px[SrcB]; }
+				}
+				SrcRow += SrcStride;
+			}
+		}
+
+		{ /* Do corrections */
+			double RCorr = GMax/(double)RMax, BCorr = GMax/(double)BMax;
+			unsigned char *SrcRow = Src->Data, *DstRow = Dst->Data;
+
+#ifdef AWB_SELFTEST
+			printf( "RMax = %d,   GMax = %d,   BMax = %d\n"
+					"RCorr = %lf,  BCorr = %lf\n",
+					RMax, GMax, BMax,
+					RCorr, BCorr);
+#endif/*AWB_SELFTEST*/
+
+			for(y = 0; y < H; ++y) {
+				for(x = 0; x < W; ++x) {
+					unsigned char *SrcPx = SrcRow + (x*cSrcChannels);
+					unsigned char *DstPx = DstRow + (x*cDstChannels);
+					double R = RCorr * (double)SrcPx[SrcR] + 0.5;
+					double B = BCorr * (double)SrcPx[SrcB] + 0.5;
+					DstPx[DstR] = R < 255.0 ? (unsigned char)R : 255;
+					DstPx[DstG] = SrcPx[SrcG];
+					DstPx[DstB] = B < 255.0 ? (unsigned char)B : 255;
+				}
+				SrcRow += SrcStride;
+				DstRow += DstStride;
+			}
+		}
+	}
+
+	return Result;
+}
+
 /* Apply channel-wise affine transformation to stretch highest value pixels to white
  * and lowest to black */
 /* Clips a small percentage at top and bottom to account for noise */
@@ -294,7 +359,7 @@ awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, float
 
 int main() {
 	int Result       = 0;
-	char *ImgName    = "test_images/IMG_5041.JPG";
+	char *ImgName    = "test_images/GYM_9837.JPG";
 	unsigned char *OutData = 0;
 	awb_image Img = {0};
 
@@ -327,8 +392,9 @@ int main() {
 		stbi_write_png("test_images/"#method".png", Out.W, Out.H, Out.NumComponents, Out.Data, Out.Stride); \
 	} while(0)
 
-	/* TestMethod(SimplestColorBalance, &Out, 0.01f, 0.02f); */
+	TestMethod(SimplestColorBalance, &Out, 0.01f, 0.02f);
 	TestMethod(GrayWorld, &Out);
+	TestMethod(PerfectReflector, &Out);
 
 
 	/* /1* NOTE: just for the new histogram *1/ */
