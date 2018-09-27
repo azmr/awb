@@ -29,8 +29,8 @@
  *  [ ] D65?
  *
  *  Generality
- *  [ ] Bits per component (8/16/12?)
- *  [ ] Ordering of components (ARGB, BGR, RGBX, Greyscale?)
+ *  [ ] Bits per channel (8/16/12?)
+ *  [ ] Ordering of channels (ARGB, BGR, RGBX, Greyscale?)
  *
  *  Parallelism
  *  [ ] OMP
@@ -40,9 +40,6 @@
  *  Benchmarks
  *  [ ] Against each other
  *  [ ] For common sizes of image (?) / fractions of image size
- *
- *  Terminology
- *  - Component/Channel?
  */
 #ifndef AWB_API
 #define AWB_API static
@@ -79,9 +76,9 @@ typedef struct awb_image
 	int W;
 	int H;
 	int Stride; /* 0 -> use Width * Bytes per pixel (BPC/8)* */
-	int BitsPerComponent; /* 8/16 */
-	int NumComponents;
-	char ComponentLayout[4]; /* e.g. "ARGB" */
+	int BitsPerChannel; /* 8/16 */
+	int NumChannels;
+	char ChannelLayout[4]; /* e.g. "ARGB" */
 } awb_image;
 
 typedef enum awb_result {
@@ -107,8 +104,8 @@ awbGrayWorld(awb_image *Src, awb_image *Dst)
 	{
 		int x, y, i;
 		int SrcStride = Src->Stride, DstStride = Dst->Stride;
-		int cSrcChannels = Src->NumComponents, cDstChannels = Dst->NumComponents;
-		/* TODO: determine these from component layout */
+		int cSrcChannels = Src->NumChannels, cDstChannels = Dst->NumChannels;
+		/* TODO: determine these from channel layout */
 		int SrcR = 0, SrcG = 1, SrcB = 2;
 		int DstR = 0, DstG = 1, DstB = 2;
 
@@ -176,8 +173,8 @@ awbPerfectReflector(awb_image *Src, awb_image *Dst)
 	{
 		int x, y, i;
 		int SrcStride = Src->Stride, DstStride = Dst->Stride;
-		int cSrcChannels = Src->NumComponents, cDstChannels = Dst->NumComponents;
-		/* TODO: determine these from component layout */
+		int cSrcChannels = Src->NumChannels, cDstChannels = Dst->NumChannels;
+		/* TODO: determine these from channel layout */
 		int SrcR = 0, SrcG = 1, SrcB = 2;
 		int DstR = 0, DstG = 1, DstB = 2;
 
@@ -239,8 +236,8 @@ awbGrayWorldRetinex(awb_image *Src, awb_image *Dst)
 	{
 		int x, y, i;
 		int SrcStride = Src->Stride, DstStride = Dst->Stride;
-		int cSrcChannels = Src->NumComponents, cDstChannels = Dst->NumComponents;
-		/* TODO: determine these from component layout */
+		int cSrcChannels = Src->NumChannels, cDstChannels = Dst->NumChannels;
+		/* TODO: determine these from channel layout */
 		int SrcR = 0, SrcG = 1, SrcB = 2;
 		int DstR = 0, DstG = 1, DstB = 2;
 		double RSum = 0.0, GSum = 0.0, BSum = 0.0;
@@ -345,7 +342,7 @@ awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, float
 	int x, y, i;
 	int W = Src->W, H = Src->H;
 	int SrcStride = Src->Stride, DstStride = Dst->Stride;
-	/* TODO: determine these from component layout */
+	/* TODO: determine these from channel layout */
 	int SrcR = 0, SrcG = 1, SrcB = 2;
 	int DstR = 0, DstG = 1, DstB = 2;
 
@@ -377,7 +374,7 @@ awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, float
 	{ /* Make histogram of values for each channel */
 		for(x = 0; x < W; ++x)
 		{
-			unsigned char *Px = SrcRow + (x*Src->NumComponents);
+			unsigned char *Px = SrcRow + (x*Src->NumChannels);
 			++HistoR[Px[SrcR]];
 			++HistoG[Px[SrcG]];
 			++HistoB[Px[SrcB]];
@@ -427,8 +424,8 @@ awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, float
 		{ /* Apply scale, copying to each channel */
 			for(x = 0; x < W; ++x)
 			{
-				unsigned char *SrcPx = SrcRow + (x*Src->NumComponents);
-				unsigned char *DstPx = DstRow + (x*Dst->NumComponents);
+				unsigned char *SrcPx = SrcRow + (x*Src->NumChannels);
+				unsigned char *DstPx = DstRow + (x*Dst->NumChannels);
 					 if(SrcPx[SrcR] < MinR) { DstPx[DstR] = MinR; }
 				else if(SrcPx[SrcR] > MaxR) { DstPx[DstR] = MaxR; }
 				else                        { DstPx[DstR] = SrcPx[SrcR]; }
@@ -469,25 +466,25 @@ int main() {
 	unsigned char *OutData = 0;
 	awb_image Img = {0};
 
-	Img.Data = stbi_load(ImgName, &Img.W, &Img.H, &Img.NumComponents, 0);
+	Img.Data = stbi_load(ImgName, &Img.W, &Img.H, &Img.NumChannels, 0);
 	if(! Img.Data) {
 		fprintf(stderr, "Failed to open file %s", ImgName);
 		Result = -1; goto end;
 	}
 	printf("Opened image %s for processing\n", ImgName);
-	Img.Stride = Img.W * Img.NumComponents;
+	Img.Stride = Img.W * Img.NumChannels;
 	printf("Image data:\n"
 		   "   Width:  %d\n"
 		   "   Height: %d\n"
 		   "   Stride: %d\n"
 		   "   Channels: %d\n"
-		   , Img.W, Img.H, Img.Stride, Img.NumComponents);
+		   , Img.W, Img.H, Img.Stride, Img.NumChannels);
 	
 	OutData = malloc(Img.Stride * Img.H);
 	memset(OutData, 127, Img.Stride * Img.H); /* check that the data is being used) */ \
 
 	/* puts("Writing first image"); */
-	/* stbi_write_png("test_images/testOrig.png", Img.W, Img.H, Img.NumComponents, Img.Data, Img.Stride); */
+	/* stbi_write_png("test_images/testOrig.png", Img.W, Img.H, Img.NumChannels, Img.Data, Img.Stride); */
 
 #define TestMethod(method, ...) do { \
 		awb_image Out = Img; \
@@ -495,7 +492,7 @@ int main() {
 		Out.Data = OutData; \
 		awbAssert(! awb## method(&Img, __VA_ARGS__)); \
 		puts("Writing image"); \
-		stbi_write_png("test_images/"#method".png", Out.W, Out.H, Out.NumComponents, Out.Data, Out.Stride); \
+		stbi_write_png("test_images/"#method".png", Out.W, Out.H, Out.NumChannels, Out.Data, Out.Stride); \
 	} while(0)
 
 	/* TestMethod(SimplestColorBalance, &Out, 0.01f, 0.02f); */
