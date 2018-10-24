@@ -4,7 +4,7 @@
  *  Illuminant Estimation Methods
  *  [ ] Gray World Theory
  *  	[X] Vanilla
- *  	[ ] + Retinex
+ *  	[X] + Retinex
  *  	[ ] + Standard Deviation Weighting
  *  	[ ] + Standard Deviation & Luminance Weighting
  *  	[ ] Robust (Huo et al., 2005)
@@ -14,9 +14,12 @@
  *  	[ ] Poisson/PDE (IPOL - Limare et al., 2011)
  *  [ ] Sensor Correlation (?)
  *  [ ] Chiou's White Balance (white point detection, white balance judge, white balance adjustment)
+ *  [ ] Edge detection based
+ *  [ ] Combined methods/consensus
  *  [ ] ...
  *
  *  Chromatic Adaptation Transforms
+ *  [ ] (Simple gain)
  *  [ ] None
  *  [ ] von Kries
  *  [ ] Bradford
@@ -55,7 +58,7 @@
 #define awbAssert(expr) ((expr) || (fprintf(stderr, "\nAssertion Failed in %s (%s:%d):\n\t%s", __FUNCTION__, __FILE__, __LINE__, #expr), *(void*)0, 1))
 #endif
 #endif/*awbAssert*/
-void DebugHisto(char *Name, int N, int *Histo, int Step, int Denom)
+AWB_API void DebugHisto(char *Name, int N, int *Histo, int Step, int Denom)
 {
 	int i, j;
 	printf("\n\n%s:", Name);
@@ -79,16 +82,224 @@ typedef struct awb_image
 	int BitsPerChannel; /* 8/16 */
 	int NumChannels;
 	char ChannelLayout[4]; /* e.g. "ARGB" */
+	unsigned char R, G, B, A; /* Offset into pixel - never assumed to be set */
 } awb_image;
 
 typedef enum awb_result {
 	AWB_Ok = 0,
 	AWB_Error = -1,
 	AWB_UnmatchedDimensions = -2,
+	AWB_InvalidConstant = -3,
 } awb_result;
+
+typedef struct awb_vector { double E[3]; } awb_vector;
+typedef struct awb_matrix { double E[3][3]; } awb_matrix;
+
+awb_matrix awbIdentity = { 1.0, 0.0, 0.0,
+	                       0.0, 1.0, 0.0,
+	                       0.0, 0.0, 1.0 };
 
 #if defined(AWB_IMPLEMENTATION) || defined(AWB_SELFTEST)
 /* Input and output images may be the same */
+
+#define awbAbs(x) (((x) >= 0) ? (x) : -(x))
+#define awbNorm(x) ((double)(x)/255.0)
+#define awbDenorm(x) ((unsigned char)((x)*255.0 + 0.5))
+#define awbClip(x, lo, hi) (
+#define awbSign(x) \
+((x)               \
+	? ((x) > 0     \
+		?  1       \
+		: -1)      \
+	: 0)
+#define awbClamp(x, min, max) ( \
+	((x) <= (min)) ? (min) : \
+	((x) >= (max)) ? (max) : \
+	(x))
+		
+#define awbClamp01(x) awbClamp(x, 0.0, 1.0)
+
+AWB_API awb_vector
+awbM3V3Mult(awb_matrix Mat, awb_vector Vec)
+{ /* TODO (opt): SIMD: */
+	awb_vector Result = {
+		Mat.E[0][0]*Vec.E[0] + Mat.E[0][1]*Vec.E[1] + Mat.E[0][2]*Vec.E[2],
+		Mat.E[1][0]*Vec.E[0] + Mat.E[1][1]*Vec.E[1] + Mat.E[1][2]*Vec.E[2],
+		Mat.E[2][0]*Vec.E[0] + Mat.E[2][1]*Vec.E[1] + Mat.E[2][2]*Vec.E[2]
+	};
+	return Result;
+}
+
+AWB_API awb_vector
+awbYUVFromRGB(awb_vector RGB)
+{
+	awb_matrix M = {  .299,  .587,  .114,
+		             -.299, -.587,  .886,
+		              .701, -.587, -.114 }; /* from Huo et al. */
+	awb_vector YUV = awbM3V3Mult(M, RGB);
+	return YUV;
+}
+
+AWB_API awb_vector
+awbYUVFromRGB255(unsigned char R, unsigned char G, unsigned char B) {
+	awb_vector RGB = { awbNorm(R), awbNorm(G), awbNorm(B) };
+	return awbYUVFromRGB(RGB);
+}
+
+AWB_API awb_vector
+awbRGBFromYUV(awb_vector YUV)
+{
+	awb_matrix M = { 1.0, 0.0,          1.0,
+		             1.0, -.1942078365, -.5093696763,
+		             1.0, 1.0,          0.0 }; /* inverse of above */
+	awb_vector RGB = awbM3V3Mult(M, YUV);
+	return RGB;
+}
+
+AWB_API void
+awbRGB255FromYUV(awb_vector YUV, unsigned char *R, unsigned char *G, unsigned char *B) {
+	awb_vector RGB = awbRGBFromYUV(YUV);
+	*R = awbDenorm(RGB.E[0]), *G = awbDenorm(RGB.E[1]), *B = awbDenorm(RGB.E[2]);
+}
+
+
+AWB_API awb_result
+awbRobustGrayWorld(awb_image *Src, awb_image *Dst, double GrayThreshold)
+{
+	awb_result Result = 0;
+	int W = Src->W, H = Src->H, N = W*H;
+
+	if(Dst->W != W || Dst->H != H)
+	{ Result = AWB_UnmatchedDimensions; }
+	else if(GrayThreshold > 1.0 || GrayThreshold < 0.0)
+		//TODO: ErrorTolerance limits
+	{ Result = AWB_InvalidConstant; }
+
+	if(Result == AWB_Ok)
+	{
+		int SrcAdj = 0, DstAdj = 0,
+		    SrcRem = 0, DstRem = 0;
+		
+		int iFeedback, U_V;
+		enum { Y, U, V, cYUV };
+
+		Src->R = 0, Src->G = 1, Src->B = 2;
+		Dst->R = 0, Dst->G = 1, Dst->B = 2;
+
+		for(iFeedback = 0; ; ++iFeedback, Src = Dst)
+		{ /* iteratively approach 'optimal' white balance ***************************/
+			int cSrcChannels = Src->NumChannels, cDstChannels = Dst->NumChannels;
+			int SrcStride = Src->Stride, DstStride = Dst->Stride;
+			int x, y, i;
+			double GrayAvg[cYUV];
+			{
+				/* Find avg value of U and V for gray color points ***********************/
+				int cGray = 0;
+				double GraySum[cYUV] = {0}, dN;
+				unsigned char *SrcRow = Src->Data;
+
+				for(y = 0; y < H; ++y) {
+					for(x = 0; x < W; ++x) {
+						unsigned char *Px = SrcRow + (x*cSrcChannels),
+									  r = Px[Src->R], g = Px[Src->G], b = Px[Src->B];
+
+						awb_vector YUV = awbYUVFromRGB255(r, g, b);
+						double Y_ = YUV.E[Y], u = YUV.E[U], v = YUV.E[V];
+
+						/* TODO (opt): would this be faster as 3 mults + add? */
+						if(( (awbAbs(u) + awbAbs(v)) / Y_ ) < GrayThreshold) { /* Found a gray point */
+							++cGray;
+							double PxU = awbNorm(b) - Y_;
+							double PxV = awbNorm(r) - Y_;
+							GraySum[U] += awbAbs(PxU);
+							GraySum[V] += awbAbs(PxV);
+						}
+					}
+					SrcRow += SrcStride;
+				}
+
+				// TODO: what if no gray points found?
+				dN = (double) cGray;
+				GrayAvg[U] = GraySum[U]/dN, GrayAvg[V] = GraySum[V]/dN;
+			}
+
+			{ /* Decide on adjustments *************************************************/
+				if(awbAbs(GrayAvg[U]) >= awbAbs(GrayAvg[V])) { /* |(B-Y)| >= |(R-Y)| */
+					U_V = U;
+					SrcAdj = Src->B; SrcRem = Src->R;
+					DstAdj = Dst->B; DstRem = Dst->R;
+				}
+				else {
+					U_V = V;
+					SrcAdj = Src->R; SrcRem = Src->B;
+					DstAdj = Dst->R; DstRem = Dst->B;
+				}
+			}
+
+			{ /* Do corrections ********************************************************/
+				double Corr[2] = { 1.0/GrayAvg[U], 1.0/GrayAvg[V] };
+				unsigned char *SrcRow = Src->Data, *DstRow = Dst->Data;
+
+				double ErrSignal = - GrayAvg[U_V]; /* correct by going in the opposite direction */
+
+				double Gain;
+				int Step;
+				{ /* Error weighting - find step size */
+					double const ErrThreshA = 0.8, ErrThreshB = 0.15;
+					double AbsErrSignal = awbAbs(ErrSignal);
+					double ErrSign = (double)awbSign(ErrSignal);
+					double K = (AbsErrSignal >= ErrThreshA)  ?  2.0 * ErrSign
+						     : (AbsErrSignal >= ErrThreshB)  ?        ErrSign
+						     : 0.0;
+
+					if(K)
+					{
+						double const mu = 0.0312; /* minimum channel gain increment */
+						Gain = 1.0 + mu * K;
+						Step = (int)K * 8;
+					}
+					else
+					{ /* difference is smaller than step size - we're finished */
+						printf("Finished after %d iterations\n", iFeedback);
+						break;
+					}
+				}
+
+#ifdef AWB_SELFTEST
+					printf( "GrayAvg: U = %lf,   V = %lf,    [%c] Gain: %lf\n"
+							"   Corr: U = %lf,   V = %lf\n",
+							GrayAvg[U], GrayAvg[V], U_V ? 'V' : 'U', Gain,
+							Corr[U], Corr[V]
+						  );
+#endif/*AWB_SELFTEST*/
+
+				for(y = 0; y < H; ++y) {
+					for(x = 0; x < W; ++x) {
+						unsigned char *SrcPx = SrcRow + (x*cSrcChannels);
+						unsigned char *DstPx = DstRow + (x*cDstChannels);
+						// TODO: should be changing R/B, not U/V
+						/* awb_vector YUV = awbYUVFromRGB255(SrcPx[Src->R], SrcPx[Src->G], SrcPx[Src->B]); */
+						/* YUV.E[1] *= Corr[U], YUV.E[2] *= Corr[V]; */
+						/* YUV.E[U_V] += StepSize; */
+						/* awbRGB255FromYUV(YUV, DstPx+Dst->R, DstPx+Dst->G, DstPx+Dst->B); */
+						/* double DstVal = awbNorm(SrcPx[SrcAdj]); */
+						/* DstVal *= Gain; */
+						/* DstVal = awbClamp01(DstVal); */
+						/* DstPx[DstAdj] = awbDenorm(DstVal); */
+						DstPx[DstAdj] = SrcPx[SrcAdj] + Step;
+						DstPx[Dst->G] = SrcPx[Src->G];
+						DstPx[DstRem] = SrcPx[SrcRem];
+					}
+					SrcRow += SrcStride;
+					DstRow += DstStride;
+				}
+			}
+
+		}
+	}
+
+	return Result;
+}
 
 AWB_API awb_result
 awbGrayWorld(awb_image *Src, awb_image *Dst)
@@ -102,7 +313,7 @@ awbGrayWorld(awb_image *Src, awb_image *Dst)
 
 	if(Result == AWB_Ok)
 	{
-		int x, y, i;
+		int x, y;
 		int SrcStride = Src->Stride, DstStride = Dst->Stride;
 		int cSrcChannels = Src->NumChannels, cDstChannels = Dst->NumChannels;
 		/* TODO: determine these from channel layout */
@@ -163,7 +374,7 @@ AWB_API awb_result
 awbPerfectReflector(awb_image *Src, awb_image *Dst)
 {
 	awb_result Result = 0;
-	int W = Src->W, H = Src->H, N = W*H;
+	int W = Src->W, H = Src->H;
 
 	/* TODO: error checking */
 	if(Dst->W != W || Dst->H != H)
@@ -171,7 +382,7 @@ awbPerfectReflector(awb_image *Src, awb_image *Dst)
 
 	if(Result == AWB_Ok)
 	{
-		int x, y, i;
+		int x, y;
 		int SrcStride = Src->Stride, DstStride = Dst->Stride;
 		int cSrcChannels = Src->NumChannels, cDstChannels = Dst->NumChannels;
 		/* TODO: determine these from channel layout */
@@ -226,7 +437,7 @@ AWB_API awb_result
 awbGrayWorldRetinex(awb_image *Src, awb_image *Dst)
 {
 	awb_result Result = 0;
-	int W = Src->W, H = Src->H, N = W*H;
+	int W = Src->W, H = Src->H;
 
 	/* TODO: error checking */
 	if(Dst->W != W || Dst->H != H)
@@ -234,7 +445,7 @@ awbGrayWorldRetinex(awb_image *Src, awb_image *Dst)
 
 	if(Result == AWB_Ok)
 	{
-		int x, y, i;
+		int x, y;
 		int SrcStride = Src->Stride, DstStride = Dst->Stride;
 		int cSrcChannels = Src->NumChannels, cDstChannels = Dst->NumChannels;
 		/* TODO: determine these from channel layout */
@@ -328,6 +539,7 @@ awbGrayWorldRetinex(awb_image *Src, awb_image *Dst)
 
 
 
+#ifdef AWB_SELFTEST
 /* Apply channel-wise affine transformation to stretch highest value pixels to white
  * and lowest to black */
 /* Clips a small percentage at top and bottom to account for noise */
@@ -348,10 +560,11 @@ awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, float
 
 	int N          = W * H;
 	float fN       = (float)N;
+	// TODO: ensure they're positive
 	int SatLoCount = (int)(LowSaturate  * fN + 0.5f);
 	int SatHiCount = (int)(HighSaturate * fN + 0.5f);
-	int SatLoPos   = SatLoCount;
-	int SatHiPos   = W*H - SatHiCount - 1;
+	unsigned int SatLoPos   = SatLoCount;
+	unsigned int SatHiPos   = W*H - SatHiCount - 1;
 	
 	/* TODO (opt): do I really need to know if more than 65K/255 pixels are in
 	 * a single histo bucket? if not, I can save a lot of space (and maybe do some
@@ -383,6 +596,7 @@ awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, float
 	}
 
 	/* TODO (feat): make histogram available for user? */
+#ifdef AWB_SELFTEST
 	{ /* DEBUG: Histos */
 		int HistScale = N/500;
 		int HistStep = 16;
@@ -390,6 +604,7 @@ awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, float
 		DebugHisto("Green", sizeof(HistoG)/sizeof(*HistoR), HistoG, HistStep, HistScale);
 		DebugHisto("Blue",  sizeof(HistoB)/sizeof(*HistoR), HistoB, HistStep, HistScale);
 	}
+#endif/*AWB_SELFTEST*/
 	
 	for(i = 1; i < 255; ++i)
 	{ /* Make histograms cumulative */
@@ -449,6 +664,7 @@ awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, float
 
 	return Result;
 }
+#endif/*SELFTEST*/
 #endif/*AWB_IMPLEMENTATION*/
 
 #ifdef AWB_SELFTEST
@@ -459,32 +675,76 @@ awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, float
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "../stb/stb_image_write.h"
 #include <stdlib.h>
+#define SWEET_NUM_TESTS 512
+#define SWEET_NOCOLOUR
+#include "../sweet/sweet.h"
+
+#define PrintArrayD(var, N, Wrap) PrintArrayD_(#var": ", (double *)var, N, Wrap)
+#define PrintElements(var, N, Wrap) PrintArrayD_(#var": ", (double *)var.E, N, Wrap)
+void PrintArrayD_(char *Prefix, double *D, int N, int Wrap)
+{
+	int i;
+	printf("%s{ ", Prefix);
+	for(i = 0; i < N; ++i)
+	{
+		printf("%lf, ", D[i]);
+		if(i%Wrap == Wrap-1 && i != N-1)
+		{ printf("\n     ");}
+	}
+	printf("}\n");
+}
 
 int main() {
 	int Result       = 0;
-	char *ImgName    = "test_images/GYM_9837.JPG";
-	unsigned char *OutData = 0;
-	awb_image Img = {0};
+	{ /* UNIT TESTS */
+		TestGroup("Matrices")
+		{
+			awb_vector Before = { 3.21, -.8, 48.8 };
+			awb_vector After = awbM3V3Mult(awbIdentity, Before);
+			TestEq(Before, After);
+			PrintElements(Before, 3, 8);
+			PrintElements(After, 3, 8);
 
-	Img.Data = stbi_load(ImgName, &Img.W, &Img.H, &Img.NumChannels, 0);
-	if(! Img.Data) {
-		fprintf(stderr, "Failed to open file %s", ImgName);
-		Result = -1; goto end;
+			awb_matrix A = { 2, -5, 1,
+	                         0,  3, 4,
+	                        -7,  1, 8 };
+	        awb_vector B = { 3, -1, 2 };
+	        awb_vector ABExpected = { 13, 5, -6 };
+			awb_vector ABActual = awbM3V3Mult(A, B);
+	        TestEq(ABExpected, ABActual);
+			PrintElements(A, 9, 3);
+			PrintElements(B, 3, 3);
+			PrintElements(ABExpected, 3, 3);
+			PrintElements(ABActual, 3, 3);
+		} EndTestGroup;
 	}
-	printf("Opened image %s for processing\n", ImgName);
-	Img.Stride = Img.W * Img.NumChannels;
-	printf("Image data:\n"
-		   "   Width:  %d\n"
-		   "   Height: %d\n"
-		   "   Stride: %d\n"
-		   "   Channels: %d\n"
-		   , Img.W, Img.H, Img.Stride, Img.NumChannels);
-	
-	OutData = malloc(Img.Stride * Img.H);
-	memset(OutData, 127, Img.Stride * Img.H); /* check that the data is being used) */ \
 
-	/* puts("Writing first image"); */
-	/* stbi_write_png("test_images/testOrig.png", Img.W, Img.H, Img.NumChannels, Img.Data, Img.Stride); */
+	{ /* CONTENT TESTS */
+		/* char *ImgName	= "test_images/GYM_9837.JPG"; */
+		char *ImgName	= "test_images/IMG_5041.JPG";
+		unsigned char *OutData = 0;
+		awb_image Img = {0};
+
+		Img.Data = stbi_load(ImgName, &Img.W, &Img.H, &Img.NumChannels, 0);
+		if(! Img.Data) {
+			fprintf(stderr, "Failed to open file %s", ImgName);
+			Result = -1; goto end;
+		}
+		printf("Opened image %s for processing\n", ImgName);
+		Img.Stride = Img.W * Img.NumChannels;
+		printf("Image data:\n"
+				"   Width:  %d\n"
+				"   Height: %d\n"
+				"   Stride: %d\n"
+				"   Channels: %d\n"
+				, Img.W, Img.H, Img.Stride, Img.NumChannels);
+
+		OutData = malloc(Img.Stride * Img.H);
+		memset(OutData, 127, Img.Stride * Img.H); /* check that the data is being used) */ \
+		/* memset(Img.Data, 127, Img.Stride * Img.H); /1* check that gray does nothing *1/ \ */
+
+			/* puts("Writing first image"); */
+			/* stbi_write_png("test_images/testOrig.png", Img.W, Img.H, Img.NumChannels, Img.Data, Img.Stride); */
 
 #define TestMethod(method, ...) do { \
 		awb_image Out = Img; \
@@ -493,18 +753,22 @@ int main() {
 		awbAssert(! awb## method(&Img, __VA_ARGS__)); \
 		puts("Writing image"); \
 		stbi_write_png("test_images/"#method".png", Out.W, Out.H, Out.NumChannels, Out.Data, Out.Stride); \
-	} while(0)
+} while(0) \
 
-	/* TestMethod(SimplestColorBalance, &Out, 0.01f, 0.02f); */
-	/* TestMethod(GrayWorld, &Out); */
-	/* TestMethod(PerfectReflector, &Out); */
-	TestMethod(GrayWorldRetinex, &Out);
+		/* TestMethod(SimplestColorBalance, &Out, 0.01f, 0.02f); */
+		/* TestMethod(GrayWorld, &Out); */
+		/* TestMethod(PerfectReflector, &Out); */
+		/* TestMethod(GrayWorldRetinex, &Out); */
+		TestMethod(RobustGrayWorld, &Out, 0.097);
 
 
-	/* /1* NOTE: just for the new histogram *1/ */
-	/* awbSimplestColorBalance(&Img, &Img, 0.01f, 0.02f); */
+		/* /1* NOTE: just for the new histogram *1/ */
+		/* awbSimplestColorBalance(&Img, &Img, 0.01f, 0.02f); */
+	}
+
 
 	end:
+	PrintTestResults(sweetCONTINUE);
 	return Result;
 }
 #endif/*AWB_SELFTEST*/
