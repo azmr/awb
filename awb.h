@@ -52,12 +52,14 @@
 #include <stdio.h>
 
 #ifndef awbAssert
-#ifdef _MSC_VER
+#if 0//#ifdef _MSC_VER
 #define awbAssert(expr) ((expr) || (fprintf(stderr, "\nAssertion Failed in %s (%s:%d):\n\t%s\n", __FUNCTION__, __FILE__, __LINE__, #expr), __debugbreak, 1))
 #else
-#define awbAssert(expr) ((expr) || (fprintf(stderr, "\nAssertion Failed in %s (%s:%d):\n\t%s\n", __FUNCTION__, __FILE__, __LINE__, #expr), *(void*)0, 1))
+#define awbAssert(expr) ((expr) || (fprintf(stderr, "\nAssertion Failed in %s (%s:%d):\n\t%s\n", __FUNCTION__, __FILE__, __LINE__, #expr), *(int*)0 == 1))
 #endif
 #endif/*awbAssert*/
+
+
 AWB_API void DebugHisto(char *Name, int N, int *Histo, int Step, int Denom)
 {
 	int i, j;
@@ -118,6 +120,8 @@ awb_matrix awbIdentity = { 1.0, 0.0, 0.0,
 	(x))
 		
 #define awbClamp01(x) awbClamp(x, 0.0, 1.0)
+#define awbMin(a,b) (((a) <= (b)) ? (a) : (b))
+#define awbMax(a,b) (((a) >= (b)) ? (a) : (b))
 
 AWB_API awb_vector
 awbM3V3Mult(awb_matrix Mat, awb_vector Vec)
@@ -198,7 +202,7 @@ awbRobustGrayWorld(awb_image *Src, awb_image *Dst, double GrayThreshold)
 				double GraySum[cRGB] = {0}, dN;
 				unsigned char *SrcRow = Src->Data;
 
-				for(y = 0; y < H; ++y) {
+				for(y = 0; y < H; ++y, SrcRow += SrcStride) {
 					for(x = 0; x < W; ++x) {
 						unsigned char *Px = SrcRow + (x*cSrcChannels),
 									  r = Px[Src->R], g = Px[Src->G], b = Px[Src->B];
@@ -214,7 +218,6 @@ awbRobustGrayWorld(awb_image *Src, awb_image *Dst, double GrayThreshold)
 							GraySum[gB] += (double)b;
 						}
 					}
-					SrcRow += SrcStride;
 				}
 
 				// TODO: what if no gray points found?
@@ -270,14 +273,13 @@ awbGrayWorld(awb_image *Src, awb_image *Dst)
 		double RSum = 0, GSum = 0, BSum = 0, RAvg, GAvg, BAvg, dN = (double)N;
 		{ /* Find avg value of each */
 			unsigned char *SrcRow = Src->Data;
-			for(y = 0; y < H; ++y) {
+			for(y = 0; y < H; ++y, SrcRow += SrcStride) {
 				for(x = 0; x < W; ++x) {
 					unsigned char *Px = SrcRow + (x*cSrcChannels);
 					RSum += (double)Px[SrcR];
 					GSum += (double)Px[SrcG];
 					BSum += (double)Px[SrcB];
 				}
-				SrcRow += SrcStride;
 			}
 
 			RAvg = RSum/dN, GAvg = GSum/dN, BAvg = BSum/dN;
@@ -339,14 +341,13 @@ awbPerfectReflector(awb_image *Src, awb_image *Dst)
 		unsigned char RMax = 0, GMax = 0, BMax = 0;
 		{ /* Find max value of each */
 			unsigned char *SrcRow = Src->Data;
-			for(y = 0; y < H; ++y) {
+			for(y = 0; y < H; ++y, SrcRow += SrcStride) {
 				for(x = 0; x < W; ++x) {
 					unsigned char *Px = SrcRow + (x*cSrcChannels);
 					if(RMax < Px[SrcR]) { RMax = Px[SrcR]; }
 					if(GMax < Px[SrcG]) { GMax = Px[SrcG]; }
 					if(BMax < Px[SrcB]) { BMax = Px[SrcB]; }
 				}
-				SrcRow += SrcStride;
 			}
 		}
 
@@ -361,7 +362,7 @@ awbPerfectReflector(awb_image *Src, awb_image *Dst)
 					RCorr, BCorr);
 #endif/*AWB_SELFTEST*/
 
-			for(y = 0; y < H; ++y) {
+			for(y = 0; y < H; ++y, SrcRow += SrcStride, DstRow += DstStride) {
 				for(x = 0; x < W; ++x) {
 					unsigned char *SrcPx = SrcRow + (x*cSrcChannels);
 					unsigned char *DstPx = DstRow + (x*cDstChannels);
@@ -371,8 +372,6 @@ awbPerfectReflector(awb_image *Src, awb_image *Dst)
 					DstPx[DstG] = SrcPx[SrcG];
 					DstPx[DstB] = B < 255.0 ? (unsigned char)B : 255;
 				}
-				SrcRow += SrcStride;
-				DstRow += DstStride;
 			}
 		}
 	}
@@ -463,7 +462,7 @@ awbGrayWorldRetinex(awb_image *Src, awb_image *Dst)
 					Ru, Rv, Bu, Bv);
 #endif/*AWB_SELFTEST*/
 
-			for(y = 0; y < H; ++y) {
+			for(y = 0; y < H; ++y, SrcRow += SrcStride, DstRow += DstStride) {
 				for(x = 0; x < W; ++x) {
 					unsigned char *SrcPx = SrcRow + (x*cSrcChannels);
 					unsigned char *DstPx = DstRow + (x*cDstChannels);
@@ -475,8 +474,6 @@ awbGrayWorldRetinex(awb_image *Src, awb_image *Dst)
 					DstPx[DstG] = SrcPx[SrcG];
 					DstPx[DstB] = B < 1.0 ? (unsigned char)(255.0*B + 0.5) : 255;
 				}
-				SrcRow += SrcStride;
-				DstRow += DstStride;
 			}
 		}
 	}
@@ -484,6 +481,241 @@ awbGrayWorldRetinex(awb_image *Src, awb_image *Dst)
 	return Result;
 }
 
+
+#ifdef AWB_SELFTEST
+/* Exposure Adjustment ****************************************************** */
+#include "../graph/graph.h"
+
+typedef enum awbZone
+{
+	awbZONE_0 = 0,
+	awbZONE_I,
+	awbZONE_II,
+	awbZONE_III,
+	awbZONE_IV,
+	awbZONE_V,
+	awbZONE_VI,
+	awbZONE_VII,
+	awbZONE_VIII,
+	awbZONE_IX,
+	awbZONE_X,
+} awbZone;
+double awbZoneVal[] = { 0.0, .1, .2, .3, .4, .5, .6, .7, .8, .9, 1.0 };
+
+typedef struct awb_segmentation {
+	grf_ds Graph;
+	double *InternalDiffs; // This should be kept parallel to vertices
+	grf_i *Components; // the roots of each disjoint set (no parallel)
+	// TODO: intrusive graphs?
+} awb_segmentation;
+
+static void
+awbSegmentationFree(awb_segmentation Seg)
+{
+	arr_free(Seg.InternalDiffs);
+	arr_free(Seg.Components);
+}
+
+
+static double
+awbMinInternalDiffWithThreshold(awb_segmentation Seg, grf_i C1, grf_i C2, double ThresholdK, double *MinIntDiff)
+{
+	grf_ds G = Seg.Graph;
+	grf_i RepC1 = grfDSFindRootCompress(G,C1),
+	      RepC2 = grfDSFindRootCompress(G,C2);
+
+	double thresh1 = ThresholdK / G.Vtxs[RepC1].Info.Size,
+	       thresh2 = ThresholdK / G.Vtxs[RepC2].Info.Size,
+	       diff1   = Seg.InternalDiffs[RepC1],
+	       diff2   = Seg.InternalDiffs[RepC2],
+	       d1      = diff1 + thresh1,
+	       d2      = diff2 + thresh2;
+		   
+	double Result = awbMin(d1, d2);
+	*MinIntDiff = awbMin(diff1, diff2);
+	return Result;
+}
+
+/* int awbComponentComparisonPredicate(grf_ds G, grf_i C1, grf_i C2) { */
+/* 	int Result = grfDSComponentDiff(G, C1, C2) > awbMinInternalDiff(G, C1, C2); */
+/* 	return Result; */
+/* } */
+
+// Crude measure of brightness difference
+static inline double
+awbRGBDiff(awb_image *Src, unsigned char *PxA, unsigned char *PxB)
+{
+	// TODO: properly
+	const int R = 0, G = 1, B = 2;
+	double RGB_A = (double)PxA[R] + (double)PxA[G] + (double)PxA[B];
+	double RGB_B = (double)PxB[R] + (double)PxB[G] + (double)PxB[B];
+	double Result = RGB_A - RGB_B;
+	Result = awbAbs(Result);
+	return Result;
+}
+
+static inline double
+awbRGBDist(awb_image *Src, unsigned char *PxA, unsigned char *PxB)
+{
+	// TODO: properly
+	const int R = 0, G = 1, B = 2;
+	double dR = awbNorm(PxA[R]) - awbNorm(PxB[R]),
+	       dG = awbNorm(PxA[G]) - awbNorm(PxB[G]),
+	       dB = awbNorm(PxA[B]) - awbNorm(PxB[B]);
+	double Result = dR*dR + dG*dG + dB*dB;
+	return sqrt(Result);
+}
+
+static inline double
+awbRDiff(awb_image *Src, unsigned char *PxA, unsigned char *PxB) {
+	double dR = awbNorm(*PxA) - awbNorm(*PxB);
+	return awbAbs(dR);
+}
+
+static inline grf_ds_edge
+awbAddWeightedEdge(awb_image *Src, grf_ds *G, grf_i Vi, grf_i Vj, char *Label) {
+	awbAssert(Vi != Vj);
+	grf_ds_edge Edge = G->Edges[grfDSAddEdge(G, Vi, Vj, 
+		awbRDiff(Src, (unsigned char *)G->Vtxs[Vi].Data, (unsigned char *)G->Vtxs[Vj].Data),
+		Label)];
+	return Edge;
+}
+
+// TODO: may want to be able to specify edge creation
+static awb_segmentation
+awbSegmentImage(awb_image *Src, double GroupingThreshold)
+{ /* Felzenszwalb & HuttenLocher, 2003: Efficient Graph-Based Image Segmentation */
+	int x,y,cEdges,iEdge, W = Src->W, H = Src->H, Stride = Src->Stride, cChannels = Src->NumChannels;
+	/* awb_edge *Edges = 0; // ? */
+	awb_segmentation Seg = {0};
+
+	/* for(int x = 0, y = 0, i = 0; x < ) */
+	unsigned char *SrcRow = Src->Data;
+	for(y = 0; y < H; ++y, SrcRow += Stride)
+	{
+		for(x = 0; x < W; ++x)
+		{
+			unsigned char *SrcPx = SrcRow + (x*cChannels);
+
+			ahd_int iPx = grfDSAddSet(&Seg.Graph, SrcPx);
+			arr_push(Seg.InternalDiffs, 0.0);
+
+			// TODO: better edge weighting
+
+			int AfterFirstCol = x >= 1, //iPx % W >= 1,
+			    AfterFirstRow = y >= 1, //iPx >= W,
+			    BeforeLastCol = x < W-1; //iPx % W != W-1;
+
+			if(AfterFirstCol) {     awbAddWeightedEdge(Src, &Seg.Graph, iPx - 1,       iPx, "Horizontal"); }
+			if(AfterFirstRow) {     awbAddWeightedEdge(Src, &Seg.Graph, iPx - W,       iPx, "Vertical");
+				if(AfterFirstCol) { awbAddWeightedEdge(Src, &Seg.Graph, (iPx - W) - 1, iPx, "Diagonal Up-Left \\"); }
+				if(BeforeLastCol) { awbAddWeightedEdge(Src, &Seg.Graph, (iPx - W) + 1, iPx, "Diagonal Up-Right /"); }
+			}
+		}
+	}
+	awbAssert(arr_len(Seg.Graph.Vtxs) == W * H);
+	awbAssert(arr_len(Seg.Graph.Edges) == (W-1)*H + (H-1)*W + 2*(H-1)*(W-1)); 
+
+	/* 0. Sort E into Pi = (o1, . . . , om), by non-decreasing (>=) edge weight. */
+	grfDSEdgeSortWeightAsc(Seg.Graph.Edges);
+	for(grf_i i = 1; i < arr_len(Seg.Graph.Edges); ++i) {
+		if(Seg.Graph.Edges[i].Weight != Seg.Graph.Edges[i-1].Weight)
+		{ int breakhere = 0; ++breakhere;}
+	}
+
+	/* 1. Start with a segmentation S0, where each vertex vi is in its own component. */
+	/* awb_ds_cmp *Segmentation = 0; //? */
+	/* 2. Repeat step 3 for q = 1, . . . ,m. (m = number of edges in graph) */
+	cEdges = arr_len(Seg.Graph.Edges); // NOTE: otherwise keeps adding edges then comparing them!
+	for(iEdge = 0; iEdge < cEdges; ++iEdge)
+	/* arr_foreachv(Seg.Graph.Edges, iEdge, grf_ds_edge, Edge) */
+	{
+		/* 3. Construct S^q given S^(q−1) as follows. */
+		/* a) Let vi and vj denote the vertices connected by the q-th edge
+		   in the ordering, i.e., oq = (vi, vj ). */
+		grf_ds_edge Edge = Seg.Graph.Edges[iEdge];
+		grf_i Vi = Edge.Vi, Vj = Edge.Vj;
+
+		/* b) If vi and vj are in disjoint components of Sq−1 and w(oq) is
+		   small compared to the internal difference of both those components,
+		   then merge the two components; otherwise do nothing.
+		   More formally, let Ci^q−1 be the component of S^(q−1) containing vi and
+		   Cj^(q−1) the component containing vj.
+		   If Ci^(q−1) = Cj^(q−1) and
+		   w(oq ) <= MInt(Ci^(q−1), Cj^(q−1))
+		   then S^q is obtained from S^(q−1) by merging Ci^(q−1) and Cj^(q−1).
+		   Otherwise S^q = S^(q−1).*/
+		grf_i Rep_i = grfDSFindRootCompress(Seg.Graph, Vi);
+		grf_i Rep_j = grfDSFindRootCompress(Seg.Graph, Vj);
+		int InDisjointComponents = Rep_i != Rep_j;
+		double MinIntDiff = 0;
+		/* awb_component PrevComponent_i = awbComponentContaining(Segmentation, Vi); */
+		/* awb_component PrevComponent_j = awbComponentContaining(Segmentation, Vj); */
+		if(InDisjointComponents &&
+				Edge.Weight <= awbMinInternalDiffWithThreshold(Seg, Rep_i, Rep_j, GroupingThreshold, &MinIntDiff) )
+		{
+			grf_i iRep = grfDSUnion(&Seg.Graph, Rep_i, Rep_j, Edge.Weight);
+			// Edge.Weight will always be >= minIntDiff as the edges are sorted in increasing order
+			awbAssert(Edge.Weight >= MinIntDiff);
+			if(!strcmp(Edge.Label,  "Horizontal"))
+			{ int b = 0; ++b; }
+			if(!strcmp(Edge.Label,  "Vertical"))
+			{ int b = 0; ++b; }
+			if(!strcmp(Edge.Label,  "Diagonal Up-Left \\"))
+			{ int b = 0; ++b; }
+			if(!strcmp(Edge.Label,  "Diagonal Up-Right /"))
+			{ int b = 0; ++b; }
+			Seg.InternalDiffs[iRep] = Edge.Weight;
+		}
+	}
+
+	// TODO(Opt): include in above loop
+	arr_foreach(Seg.Graph.Vtxs, i) {
+		if(grfDSFindRootCompress(Seg.Graph, i) == i)
+		{ arr_push(Seg.Components, i); }
+	}
+
+	/* 4. Return S = Sm. */
+	return Seg;
+}
+
+/* From: Yuan & Sun (date unknown): Automatic Exposure Correction of Consumer Photographs */
+/* Pipeline:
+           Auto-level stretch 
+           /                \
+Region Segmentation      High Level Features
+            \              /
+			Region Analysis
+			       |
+			Estimate Optimal Zone of Region
+			       |
+			Detail-preserving S-curve adjustment
+*/
+AWB_API awb_result
+awbExposureCurveAdjustment(awb_image *Src, awb_image *Dst, double GroupingThreshold)
+{
+	awb_result Result = 0;
+	int W = Src->W, H = Src->H, cSrcChannels = Src->NumChannels, SrcStride = Src->Stride, x, y;
+
+	/* TODO: error checking */
+	if(Dst->W != W || Dst->H != H)
+	{ Result = AWB_UnmatchedDimensions; }
+
+	if(Result == AWB_Ok)
+	{
+		/* Auto-level stretch */
+		{ /* Region Segmentation */
+			awb_segmentation Seg = awbSegmentImage(Src, GroupingThreshold);
+			/* High Level Features */
+		}
+		/* Region Analysis */
+		/* Estimate Optimal Zone of Region */
+		/* Detail-preserving S-curve adjustment */
+	}
+
+	return Result;
+}
+#endif /*AWB_SELFTEST*/
 
 
 #ifdef AWB_SELFTEST
@@ -619,12 +851,20 @@ awbSimplestColorBalance(awb_image *Src, awb_image *Dst, float LowSaturate, float
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
 #include "../stb/stb_image.h"
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include "../stb/stb_image_resize.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "../stb/stb_image_write.h"
 #include <stdlib.h>
 #define SWEET_NUM_TESTS 512
 #define SWEET_NOCOLOUR
 #include "../sweet/sweet.h"
+typedef struct rgb {
+	char r, g, b;
+} rgb;
+rgb rgbBlack = { 0, 0, 0 };
+#define blit_pixel rgb
+#include "..\blit-fonts\blit32.h"
 
 #define PrintArrayD(var, N, Wrap) PrintArrayD_(#var": ", (double *)var, N, Wrap)
 #define PrintElements(var, N, Wrap) PrintArrayD_(#var": ", (double *)var.E, N, Wrap)
@@ -639,6 +879,72 @@ void PrintArrayD_(char *Prefix, double *D, int N, int Wrap)
 		{ printf("\n     ");}
 	}
 	printf("}\n");
+}
+
+void TestSegmentation(char *ImgName)
+{// segmentation tests
+	awb_image Img = {0};
+	char buf[256];
+	char buf2[256];
+	snprintf(buf, sizeof(buf), "test_images/%s.jpg", ImgName);
+	
+	Img.Data = stbi_load(buf, &Img.W, &Img.H, &Img.NumChannels, 0);
+	if(! Img.Data) {
+		fprintf(stderr, "Failed to open file %s", buf);
+		return;
+	}
+	unsigned char *GroupVisRand, *GroupVisOrig, *GroupOverlay;
+	GroupVisRand = malloc(Img.W * Img.H * Img.NumChannels);
+	GroupVisOrig = malloc(Img.W * Img.H * Img.NumChannels);
+	GroupOverlay = malloc(Img.W * Img.H * Img.NumChannels);
+
+	/* memcpy(GroupOverlay, Img.Data, Img.Stride * Img.H); */
+
+	awb_segmentation Seg = awbSegmentImage(&Img, 6);
+	grf_i PxSets = grfDSCountSets(Seg.Graph);
+	awbAssert(PxSets < arr_len(Seg.Graph.Vtxs));
+
+	arr_foreach(Seg.Graph.Vtxs, iVtx) {
+		unsigned char *RandPx = GroupVisRand + 3 * iVtx; // assumes no gap between rows (bytes in W == Stride)
+		unsigned char *OrigPx = GroupVisOrig + 3 * iVtx;
+		unsigned char *OverPx = GroupOverlay + 3 * iVtx;
+		double Alpha = 0.5, inv_Alpha = 1.0-Alpha;
+		int R=0,G=1,B=2;
+		grf_i iRoot = grfDSFindRootCompress(Seg.Graph, iVtx);
+
+		unsigned char *RootPx = Img.Data + 3 * iRoot;
+		OrigPx[R] = awbDenorm(awbClamp01(awbNorm(RootPx[R])*1.15));
+		OrigPx[G] = awbDenorm(awbClamp01(awbNorm(RootPx[G])*1.15));
+		OrigPx[B] = awbDenorm(awbClamp01(awbNorm(RootPx[B])*1.15));
+
+		srand(iRoot);
+		RandPx[R] = (unsigned char) (rand() % 200 + 55 );
+		RandPx[G] = (unsigned char) (rand() % 200 + 55 );
+		RandPx[B] = (unsigned char) (rand() % 200 + 55 );
+
+		// alpha blend group colours over normal image
+		OverPx[R] = RandPx[R]*Alpha + OverPx[R]*inv_Alpha;
+		OverPx[G] = RandPx[G]*Alpha + OverPx[G]*inv_Alpha;
+		OverPx[B] = RandPx[B]*Alpha + OverPx[B]*inv_Alpha;
+	}
+
+	snprintf(buf, sizeof(buf), "test_images/%s_GroupVisRand.jpg", ImgName);
+	snprintf(buf2, sizeof(buf2), "%d Sets", arr_len(Seg.Components));
+	blit32_TextExplicit((rgb*)GroupVisRand, rgbBlack, 4, Img.W, Img.H, blit_Clip, 30, 30, buf2);
+	stbi_write_jpg(buf, Img.W, Img.H, Img.NumChannels, GroupVisRand, 80);
+
+	snprintf(buf, sizeof(buf), "test_images/%s_GroupVisOrig.jpg", ImgName);
+	stbi_write_jpg(buf, Img.W, Img.H, Img.NumChannels, GroupVisOrig, 80);
+
+	snprintf(buf, sizeof(buf), "test_images/%s_GroupOverlay.jpg", ImgName);
+	stbi_write_jpg(buf, Img.W, Img.H, Img.NumChannels, GroupOverlay, 80);
+
+
+	awbSegmentationFree(Seg);
+	free(GroupVisRand);
+	free(GroupVisOrig);
+	free(GroupOverlay);
+	free(Img.Data);
 }
 
 int main() {
@@ -667,6 +973,7 @@ int main() {
 	}
 
 	{ /* CONTENT TESTS */
+#if 0
 		char *ImgName	= "test_images/GYM_9837.JPG";
 		/* char *ImgName	= "test_images/IMG_5041.JPG"; */
 		unsigned char *OutData = 0;
@@ -692,6 +999,7 @@ int main() {
 
 			/* puts("Writing first image"); */
 			/* stbi_write_png("test_images/testOrig.png", Img.W, Img.H, Img.NumChannels, Img.Data, Img.Stride); */
+#endif
 
 #define TestMethod(method, ...) do { \
 		awb_image Out = Img; \
@@ -699,15 +1007,18 @@ int main() {
 		Out.Data = OutData; \
 		awbAssert(! awb## method(&Img, __VA_ARGS__)); \
 		puts("Writing image"); \
-		stbi_write_jpg("test_images/"#method".jpg", Out.W, Out.H, Out.NumChannels, Out.Data, 80); \
-} while(0) \
+		stbi_write_jpg("test_images/"#method".jpg", Out.W, Out.H, Out.NumChannels, Out.Data, 150); \
+		} while(0) \
 
 		/* TestMethod(SimplestColorBalance, &Out, 0.01f, 0.02f); */
 		/* TestMethod(GrayWorld, &Out); */
 		/* TestMethod(PerfectReflector, &Out); */
 		/* TestMethod(GrayWorldRetinex, &Out); */
-		TestMethod(RobustGrayWorld, &Out, .25);
-
+		/* TestMethod(RobustGrayWorld, &Out, .25); */
+		TestSegmentation("Abstract1");
+		TestSegmentation("Abstract2");
+		TestSegmentation("Abstract3");
+		TestSegmentation("Abstract4");
 
 		/* /1* NOTE: just for the new histogram *1/ */
 		/* awbSimplestColorBalance(&Img, &Img, 0.01f, 0.02f); */
